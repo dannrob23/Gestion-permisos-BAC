@@ -328,3 +328,5 @@ else:
         st.download_button("⬇️ Descargar reporte (Excel)", data=excel_buf.getvalue(),
                            file_name="historial_solicitudes.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+#   v 2  
+ 
