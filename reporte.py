@@ -54,6 +54,7 @@ def _es_admin():
     try:
         pw = str(st.secrets["admin"]["password"])
     except Exception:
+        st.warning("Secreto admin no configurado en Streamlit Cloud")
         return False
     if st.session_state.get("admin_ok"):
         return True
