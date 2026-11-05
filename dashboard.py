@@ -321,6 +321,8 @@ def auto_sync_publico():
             f.write(str(time.time()))
         if p.returncode == 0:
             st.toast("Reporte web actualizándose automáticamente...")
+        else:
+            st.toast(f"Sync error: {p.stderr[:100]}")
     except Exception:
         pass
 
