@@ -57,16 +57,18 @@ def _es_admin():
         return False
     if st.session_state.get("admin_ok"):
         return True
-    with st.sidebar:
-        with st.expander("Admin"):
-            st.text_input("Contrasena admin", type="password", key="pw_admin")
-            if st.button("Entrar admin"):
-                if st.session_state.get("pw_admin") == pw:
-                    st.session_state["admin_ok"] = True
-                    st.rerun()
-                else:
-                    st.error("Incorrecta")
-    return st.session_state.get("admin_ok", False)
+    st.markdown("---")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.text_input("Contrasena admin", type="password", key="pw_admin")
+    with col2:
+        if st.button("Entrar admin"):
+            if st.session_state.get("pw_admin") == pw:
+                st.session_state["admin_ok"] = True
+                st.rerun()
+            else:
+                st.error("Incorrecta")
+    return False
 
 es_admin = _es_admin()
 
