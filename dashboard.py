@@ -274,8 +274,8 @@ def auto_sync_publico():
         token = None
         try:
             token = st.secrets.get("GITHUB_TOKEN")
-    except Exception as e:
-        st.toast(f"Sync error: {str(e)[:150]}")
+        except Exception:
+            pass
         if not token:
             token = os.environ.get("GITHUB_TOKEN")
 
