@@ -253,78 +253,54 @@ def migrar_estados_legacy():
     con.close()
 
 def auto_sync_publico():
-    """Publica el reporte en la web automáticamente.
-    Funciona tanto en local como en Streamlit Cloud.
-    En Cloud, usa el token de GitHub de st.secrets."""
-    import shutil
     directorio = os.path.dirname(os.path.abspath(__file__))
-    marca = os.path.join(directorio, ".ultimo_sync_publico")
-    repo_local = os.path.join(directorio, "publico")
+    marca = os.path.join(directorio, '.ultimo_sync_publico')
     try:
         ultimo = 0.0
         if os.path.exists(marca):
             try:
-                ultimo = float(open(marca, encoding="utf-8").read().strip() or 0)
+                ultimo = float(open(marca, encoding='utf-8').read().strip() or 0)
             except Exception:
                 ultimo = 0.0
-        if time.time() - ultimo < 20:
+        if time.time() - ultimo < 10:
             return
-
-        # Obtener token de GitHub (local o cloud)
         token = None
         try:
-            token = st.secrets.get("GITHUB_TOKEN")
+            token = st.secrets.get('GITHUB_TOKEN')
         except Exception:
             pass
         if not token:
-            token = os.environ.get("GITHUB_TOKEN")
-
-        # Si no existe publico/, clonar desde GitHub
-        if not os.path.exists(repo_local):
-            if not token:
-                return
-            url = f"https://x-access-token:{token}@github.com/dannrob23/Solicitud-de-permisos-BAC.git"
-            subprocess.run(["git", "clone", url, repo_local],
-                          capture_output=True, text=True, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
-
-        SINC.exportar(verbose=False) if os.path.exists(os.path.join(directorio, "base.db")) else None
-
-        # Asegurar que base.db esté en publico/
-        base_src = os.path.join(directorio, "base.db")
-        base_dst = os.path.join(repo_local, "base.db")
-        if os.path.exists(base_src):
-            shutil.copy2(base_src, base_dst)
-
-        env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+            token = os.environ.get('GITHUB_TOKEN')
+        env = dict(os.environ, GIT_TERMINAL_PROMPT='0')
         if token:
-            env["GIT_ASKPASS"] = "echo"
-        r = subprocess.run(["git", "-C", repo_local, "status", "--porcelain"],
+            subprocess.run(['git', '-C', directorio, 'remote', 'set-url', 'origin',
+                            f'https://x-access-token:{token}@github.com/dannrob23/Gestion-permisos-BAC.git'],
                            capture_output=True, text=True, env=env)
-        if r.returncode != 0 or not r.stdout.strip():
+        r = subprocess.run(['git', '-C', directorio, 'status', '--porcelain'],
+                           capture_output=True, text=True, env=env)
+        if r.returncode != 0:
+            st.toast(f'Git error: {r.stderr[:100]}')
             return
-        subprocess.run(["git", "-C", repo_local, "add", "-A"], capture_output=True, text=True, env=env)
-        subprocess.run(["git", "-C", repo_local, "commit", "-m", "Actualizacion automatica del reporte"],
+        if 'base.db' not in r.stdout:
+            return
+        subprocess.run(['git', '-C', directorio, 'add', 'base.db'], capture_output=True, text=True, env=env)
+        subprocess.run(['git', '-C', directorio, 'commit', '-m', 'Actualizacion de estados'],
                        capture_output=True, text=True, env=env)
-        # Configurar remote con token si existe
-        if token:
-            subprocess.run(["git", "-C", repo_local, "remote", "set-url", "origin",
-                            f"https://x-access-token:{token}@github.com/dannrob23/Solicitud-de-permisos-BAC.git"],
-                           capture_output=True, text=True, env=env)
-        p = subprocess.run(["git", "-C", repo_local, "push", "origin", "main"],
+        p = subprocess.run(['git', '-C', directorio, 'push', 'origin', 'main'],
                            capture_output=True, text=True, env=env)
         if p.returncode != 0:
-            subprocess.run(["git", "-C", repo_local, "pull", "--rebase", "origin", "main"],
+            subprocess.run(['git', '-C', directorio, 'pull', '--rebase', 'origin', 'main'],
                            capture_output=True, text=True, env=env)
-            p = subprocess.run(["git", "-C", repo_local, "push", "origin", "main"],
+            p = subprocess.run(['git', '-C', directorio, 'push', 'origin', 'main'],
                                capture_output=True, text=True, env=env)
-        with open(marca, "w", encoding="utf-8") as f:
+        with open(marca, 'w', encoding='utf-8') as f:
             f.write(str(time.time()))
         if p.returncode == 0:
-            st.toast("Reporte web actualizándose automáticamente...")
+            st.toast('Estados actualizados en la web')
         else:
-            st.toast(f"Sync error: {p.stderr[:100]}")
-    except Exception:
-        pass
+            st.toast(f'Push error: {p.stderr[:100]}')
+    except Exception as e:
+        st.toast(f'Error: {str(e)[:150]}')
 
 def consolidar_duplicados():
     """Borra registros duplicados de una misma solicitud (mismo caso + oficina),
