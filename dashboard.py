@@ -254,13 +254,12 @@ def migrar_estados_legacy():
 
 def auto_sync_publico():
     """Publica el reporte en la web automáticamente.
-
-    Exporta base.db -> publico/base.db y hace commit + push solo si el contenido
-    cambió (git no crea commits vacíos). Con un cooldown de 20 s para no lanzar
-    pushes seguidos por interacciones rápidas. No usa GitHub Actions."""
+    Funciona tanto en local como en Streamlit Cloud.
+    En Cloud, usa el token de GitHub de st.secrets."""
+    import shutil
     directorio = os.path.dirname(os.path.abspath(__file__))
     marca = os.path.join(directorio, ".ultimo_sync_publico")
-    repo = os.path.join(directorio, "publico")
+    repo_local = os.path.join(directorio, "publico")
     try:
         ultimo = 0.0
         if os.path.exists(marca):
@@ -270,21 +269,53 @@ def auto_sync_publico():
                 ultimo = 0.0
         if time.time() - ultimo < 20:
             return
-        SINC.exportar(verbose=False)
-        r = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
-                           capture_output=True, text=True)
-        if r.returncode != 0 or not r.stdout.strip():
-            return  # sin cambios: nada que publicar
+
+        # Obtener token de GitHub (local o cloud)
+        token = None
+        try:
+            token = st.secrets.get("GITHUB_TOKEN")
+        except Exception:
+            pass
+        if not token:
+            token = os.environ.get("GITHUB_TOKEN")
+
+        # Si no existe publico/, clonar desde GitHub
+        if not os.path.exists(repo_local):
+            if not token:
+                return
+            url = f"https://x-access-token:{token}@github.com/dannrob23/Solicitud-de-permisos-BAC.git"
+            subprocess.run(["git", "clone", url, repo_local],
+                          capture_output=True, text=True, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+
+        SINC.exportar(verbose=False) if os.path.exists(os.path.join(directorio, "base.db")) else None
+
+        # Asegurar que base.db esté en publico/
+        base_src = os.path.join(directorio, "base.db")
+        base_dst = os.path.join(repo_local, "base.db")
+        if os.path.exists(base_src):
+            shutil.copy2(base_src, base_dst)
+
         env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-        subprocess.run(["git", "-C", repo, "add", "-A"], capture_output=True, text=True, env=env)
-        subprocess.run(["git", "-C", repo, "commit", "-m", "Actualizacion automatica del reporte"],
+        if token:
+            env["GIT_ASKPASS"] = "echo"
+        r = subprocess.run(["git", "-C", repo_local, "status", "--porcelain"],
+                           capture_output=True, text=True, env=env)
+        if r.returncode != 0 or not r.stdout.strip():
+            return
+        subprocess.run(["git", "-C", repo_local, "add", "-A"], capture_output=True, text=True, env=env)
+        subprocess.run(["git", "-C", repo_local, "commit", "-m", "Actualizacion automatica del reporte"],
                        capture_output=True, text=True, env=env)
-        p = subprocess.run(["git", "-C", repo, "push", "origin", "main"],
+        # Configurar remote con token si existe
+        if token:
+            subprocess.run(["git", "-C", repo_local, "remote", "set-url", "origin",
+                            f"https://x-access-token:{token}@github.com/dannrob23/Solicitud-de-permisos-BAC.git"],
+                           capture_output=True, text=True, env=env)
+        p = subprocess.run(["git", "-C", repo_local, "push", "origin", "main"],
                            capture_output=True, text=True, env=env)
         if p.returncode != 0:
-            subprocess.run(["git", "-C", repo, "pull", "--rebase", "origin", "main"],
+            subprocess.run(["git", "-C", repo_local, "pull", "--rebase", "origin", "main"],
                            capture_output=True, text=True, env=env)
-            p = subprocess.run(["git", "-C", repo, "push", "origin", "main"],
+            p = subprocess.run(["git", "-C", repo_local, "push", "origin", "main"],
                                capture_output=True, text=True, env=env)
         with open(marca, "w", encoding="utf-8") as f:
             f.write(str(time.time()))
