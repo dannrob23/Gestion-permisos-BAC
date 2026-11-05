@@ -49,8 +49,29 @@ def _acceso_permitido():
 if not _acceso_permitido():
     st.stop()
 
-st.title("📋 Solicitudes de Ingreso — Consulta")
-st.caption("Reporte de consulta (solo lectura).")
+# ---------- Modo admin ----------
+def _es_admin():
+    try:
+        pw = str(st.secrets["admin"]["password"])
+    except Exception:
+        return False
+    if st.session_state.get("admin_ok"):
+        return True
+    with st.sidebar:
+        with st.expander("Admin"):
+            st.text_input("Contrasena admin", type="password", key="pw_admin")
+            if st.button("Entrar admin"):
+                if st.session_state.get("pw_admin") == pw:
+                    st.session_state["admin_ok"] = True
+                    st.rerun()
+                else:
+                    st.error("Incorrecta")
+    return st.session_state.get("admin_ok", False)
+
+es_admin = _es_admin()
+
+st.title("Solicitudes de Ingreso - Consulta")
+st.caption("Reporte de consulta" + (" (admin)" if es_admin else " (solo lectura)."))
 
 ESTADOS = ["PENDIENTE APROBACIÓN", "APROBADO", "RECHAZADO"]
 
@@ -167,6 +188,47 @@ if df.empty:
     st.stop()
 
 df["Estado"] = df["estado"].apply(estado_norm)
+
+# ---------- Edicion de estado (solo admin) ----------
+if es_admin:
+    st.markdown("---")
+    st.markdown("#### Editar estado")
+    opciones_estados = ["PENDIENTE APROBACION", "APROBADO", "RECHAZADO", "ENVIADO", "RECIBIDO"]
+    for idx, row in df.iterrows():
+        c1, c2, c3 = st.columns([3, 2, 1])
+        with c1:
+            st.write(f"{row['caso']} - {row['solicitante']}")
+        with c2:
+            nuevo = st.selectbox("Estado", opciones_estados,
+                                 index=opciones_estados.index(row["Estado"]) if row["Estado"] in opciones_estados else 0,
+                                 key=f"est_{row['id']}")
+        with c3:
+            if st.button("Guardar", key=f"save_{row['id']}"):
+                import sqlite3 as _sq
+                con = _sq.connect(DB)
+                con.execute("UPDATE historial SET estado=? WHERE id=?", (nuevo, int(row["id"])))
+                con.commit()
+                con.close()
+                cargar_datos.clear()
+                import subprocess, os as _os
+                dirp = os.path.dirname(os.path.abspath(__file__))
+                token = None
+                try:
+                    token = st.secrets.get("GITHUB_TOKEN")
+                except Exception:
+                    pass
+                env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+                if token:
+                    subprocess.run(["git", "-C", dirp, "remote", "set-url", "origin",
+                                    "https://x-access-token:" + token + "@github.com/dannrob23/Gestion-permisos-BAC.git"],
+                                   capture_output=True, text=True, env=env)
+                subprocess.run(["git", "-C", dirp, "add", "base.db"], capture_output=True, text=True, env=env)
+                subprocess.run(["git", "-C", dirp, "commit", "-m", "Cambio de estado"],
+                               capture_output=True, text=True, env=env)
+                subprocess.run(["git", "-C", dirp, "push", "origin", "main"],
+                               capture_output=True, text=True, env=env)
+                st.toast("Estado actualizado")
+                st.rerun()
 df = df.drop(columns=["estado", "id"])
 
 st.markdown("**Estado del flujo**")
