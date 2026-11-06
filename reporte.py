@@ -12,8 +12,9 @@ import streamlit as st
 import pandas as pd
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-DB = os.path.join(BASE, "base.db")
+DB = os.path.join(BASE, "publico", "base.db")
 ZONA_COLOMBIA = ZoneInfo("America/Bogota")
+
 
 def ahora_colombia():
     """Fecha y hora actual en Colombia (UTC-5), sin importar el huso del servidor."""
@@ -127,11 +128,17 @@ def fondo_estado(val):
     c, _ = _colores(str(val))
     return f"background-color:{c}33"
 
+def _ruta_db():
+    """Devuelve exclusivamente la base sanitizada publicada."""
+    return DB
+
+
 @st.cache_data(ttl=30)
 def cargar_datos(simplificar=True):
-    if not os.path.exists(DB):
+    ruta_db = _ruta_db()
+    if not os.path.exists(ruta_db):
         return pd.DataFrame()
-    con = sqlite3.connect(DB)
+    con = sqlite3.connect(ruta_db)
     df = pd.read_sql_query(
         """SELECT id, caso, oficina, solicitante, fecha_solicitud, regional,
                   aprobador, estado, fecha_proceso, fecha_respuesta
@@ -213,25 +220,29 @@ if es_admin:
                 con.commit()
                 con.close()
                 cargar_datos.clear()
-                import subprocess, os as _os
+                import subprocess
                 dirp = os.path.dirname(os.path.abspath(__file__))
-                token = None
-                try:
-                    token = st.secrets.get("GITHUB_TOKEN")
-                except Exception:
-                    pass
                 env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+                try:
+                    token = str(st.secrets.get("GITHUB_TOKEN") or "")
+                except Exception:
+                    token = ""
                 if token:
-                    subprocess.run(["git", "-C", dirp, "remote", "set-url", "origin",
-                                    "https://x-access-token:" + token + "@github.com/dannrob23/Gestion-permisos-BAC.git"],
-                                   capture_output=True, text=True, env=env)
-                subprocess.run(["git", "-C", dirp, "add", "base.db"], capture_output=True, text=True, env=env)
-                subprocess.run(["git", "-C", dirp, "commit", "-m", "Cambio de estado"],
+                    env["GIT_CONFIG_COUNT"] = "1"
+                    env["GIT_CONFIG_KEY_0"] = "http.extraHeader"
+                    env["GIT_CONFIG_VALUE_0"] = "AUTHORIZATION: bearer " + token
+                subprocess.run(["git", "-C", dirp, "add", "publico/base.db"],
                                capture_output=True, text=True, env=env)
-                subprocess.run(["git", "-C", dirp, "push", "origin", "main"],
-                               capture_output=True, text=True, env=env)
-                st.toast("Estado actualizado")
+                commit = subprocess.run(["git", "-C", dirp, "commit", "-m", "Cambio de estado público"],
+                                        capture_output=True, text=True, env=env)
+                push = subprocess.run(["git", "-C", dirp, "push", "origin", "main"],
+                                      capture_output=True, text=True, env=env)
+                if commit.returncode == 0 and push.returncode == 0:
+                    st.toast("Estado actualizado y publicado")
+                else:
+                    st.warning("Estado actualizado en esta sesión, pero no se pudo publicar en GitHub.")
                 st.rerun()
+
 df = df.drop(columns=["estado", "id"])
 
 st.markdown("**Estado del flujo**")
@@ -328,5 +339,4 @@ else:
         st.download_button("⬇️ Descargar reporte (Excel)", data=excel_buf.getvalue(),
                            file_name="historial_solicitudes.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-#   v 2  
- 
+#

@@ -252,55 +252,32 @@ def migrar_estados_legacy():
     con.commit()
     con.close()
 
-def auto_sync_publico():
-    directorio = os.path.dirname(os.path.abspath(__file__))
-    marca = os.path.join(directorio, '.ultimo_sync_publico')
+def _token_github():
+    """Obtiene el token sin imprimirlo ni persistirlo en el remoto Git."""
     try:
-        ultimo = 0.0
-        if os.path.exists(marca):
-            try:
-                ultimo = float(open(marca, encoding='utf-8').read().strip() or 0)
-            except Exception:
-                ultimo = 0.0
-        if time.time() - ultimo < 10:
-            return
+        token = st.secrets.get("GITHUB_TOKEN")
+    except Exception:
         token = None
-        try:
-            token = st.secrets.get('GITHUB_TOKEN')
-        except Exception:
-            pass
-        if not token:
-            token = os.environ.get('GITHUB_TOKEN')
-        env = dict(os.environ, GIT_TERMINAL_PROMPT='0')
-        if token:
-            subprocess.run(['git', '-C', directorio, 'remote', 'set-url', 'origin',
-                            f'https://x-access-token:{token}@github.com/dannrob23/Gestion-permisos-BAC.git'],
-                           capture_output=True, text=True, env=env)
-        r = subprocess.run(['git', '-C', directorio, 'status', '--porcelain'],
-                           capture_output=True, text=True, env=env)
-        if r.returncode != 0:
-            st.toast(f'Git error: {r.stderr[:100]}')
-            return
-        if 'base.db' not in r.stdout:
-            return
-        subprocess.run(['git', '-C', directorio, 'add', 'base.db'], capture_output=True, text=True, env=env)
-        subprocess.run(['git', '-C', directorio, 'commit', '-m', 'Actualizacion de estados'],
-                       capture_output=True, text=True, env=env)
-        p = subprocess.run(['git', '-C', directorio, 'push', 'origin', 'main'],
-                           capture_output=True, text=True, env=env)
-        if p.returncode != 0:
-            subprocess.run(['git', '-C', directorio, 'pull', '--rebase', 'origin', 'main'],
-                           capture_output=True, text=True, env=env)
-            p = subprocess.run(['git', '-C', directorio, 'push', 'origin', 'main'],
-                               capture_output=True, text=True, env=env)
-        with open(marca, 'w', encoding='utf-8') as f:
-            f.write(str(time.time()))
-        if p.returncode == 0:
-            st.toast('Estados actualizados en la web')
-        else:
-            st.toast(f'Push error: {p.stderr[:100]}')
-    except Exception as e:
-        st.toast(f'Error: {str(e)[:150]}')
+    return token or os.environ.get("GITHUB_TOKEN")
+
+
+def auto_sync_publico(notificar=True):
+    """Publica la copia sanitizada del historial cuando existe un cambio."""
+    try:
+        resultado = SINC.sincronizar(
+            token=_token_github(),
+            commit_message="Sincronizar historial público",
+        )
+        if notificar and resultado.get("cambio"):
+            if resultado.get("publicado"):
+                st.toast("✅ Historial actualizado en la consulta pública")
+            else:
+                st.warning(f"⚠️ {resultado.get('mensaje', 'No se pudo publicar el historial.')}")
+        return resultado
+    except Exception as exc:
+        if notificar:
+            st.warning(f"⚠️ Error sincronizando la consulta pública: {str(exc)[:180]}")
+        return {"cambio": False, "publicado": False, "mensaje": str(exc)}
 
 def consolidar_duplicados():
     """Borra registros duplicados de una misma solicitud (mismo caso + oficina),
@@ -465,8 +442,8 @@ def escanear_descargas(carpeta, forzar=False):
     return filas
 
 # ---------- Sidebar ----------
-# Publica automáticamente la base en la web (solo si cambió algo)
-auto_sync_publico()
+# Sincroniza cambios pendientes al iniciar una nueva interacción.
+auto_sync_publico(notificar=False)
 
 with st.sidebar:
     st.header("⚙️ Configuración")
@@ -631,6 +608,7 @@ with tab1:
                 nuevo_estado = st.selectbox("Estado", ESTADOS, index=idx)
                 if st.button("💾 Actualizar estado", use_container_width=True):
                     marcar_estado(res["id"], nuevo_estado)
+                    auto_sync_publico()
                     st.success(f"Estado → {nuevo_estado}")
                     st.rerun()
 
@@ -647,6 +625,7 @@ with tab1:
                         A.enviar_correo(res["html"], destino_envio.strip(), res["asunto"])
                         st.success(f"✅ Correo enviado a {destino_envio.strip()}")
                         marcar_estado(res["id"], "ENVIADO")
+                        auto_sync_publico()
                     except Exception as e:
                         st.error(f"❌ No se pudo enviar: {str(e)[:250]}")
                         st.info("Configura SMTP con `configurar_smtp.py` o copia el correo arriba.")
@@ -880,6 +859,7 @@ with tab_desc:
                         else:
                             for pos in camb.index:
                                 marcar_estado(ids_vis[pos], str(camb.at[pos, "Estado"]))
+                            auto_sync_publico()
                             st.session_state["desc_rev"] = st.session_state.get("desc_rev", 0) + 1
                             st.success(f"✔ Estado actualizado en {len(camb)} solicitud(es).")
                             st.rerun()
@@ -1020,6 +1000,7 @@ with tab_hist:
                         for pos in cambiadas.index:
                             rid = int(base.at[pos_a_idx[pos], "id"])
                             marcar_estado(rid, str(cambiadas.at[pos, "Estado"]))
+                        auto_sync_publico()
                         st.session_state["hist_rev"] = st.session_state.get("hist_rev", 0) + 1
                         st.success(f"✔ Estado actualizado en {len(cambiadas)} solicitud(es).")
                         st.rerun()
