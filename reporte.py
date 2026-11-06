@@ -173,9 +173,18 @@ def _parsedt(txt):
     except Exception:
         return None
 
+def _frescura_datos():
+    """Fecha de la última publicación de la copia pública de datos."""
+    try:
+        marca = datetime.fromtimestamp(os.path.getmtime(DB), ZONA_COLOMBIA)
+        return marca.strftime("%d/%m/%Y %H:%M")
+    except OSError:
+        return "sin datos publicados"
+
 df = cargar_datos()
 
-st.caption(f"Actualizado: {ahora_colombia()} (hora de Colombia)")
+st.caption(f"Consulta abierta: {ahora_colombia()} · "
+           f"Datos publicados: {_frescura_datos()} (hora de Colombia)")
 
 # --- Toggle: Simplificar vista (debe estar antes de usarlo) ---
 col_t, _ = st.columns([2, 1])

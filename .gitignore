@@ -1,0 +1,18 @@
+# Base privada: nunca debe publicarse en el repositorio
+/base.db
+base.db-journal
+base.db-wal
+base.db-shm
+
+# Copias temporales de sincronización
+publico/base.db.tmp
+.ultimo_sync_publico
+
+# Credenciales locales
+.streamlit/secrets.toml
+secrets.toml
+.env
+
+# Python
+__pycache__/
+*.pyc
