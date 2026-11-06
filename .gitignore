@@ -21,3 +21,6 @@ __pycache__/
 
 # Credenciales de Google
 credenciales_google.json
+
+# Secretos para la nube
+.streamlit/secrets_cloud.toml
