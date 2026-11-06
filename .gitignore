@@ -24,3 +24,6 @@ credenciales_google.json
 
 # Secretos para la nube
 .streamlit/secrets_cloud.toml
+
+# Cache de desfase de reloj
+.desfase_reloj

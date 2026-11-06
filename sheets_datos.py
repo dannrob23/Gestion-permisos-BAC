@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import email.utils
 import os
+import time
 import urllib.request
 from typing import Optional
 
@@ -56,18 +57,56 @@ def _corregir_reloj() -> None:
     Google rechaza tokens firmados con hora futura; si el equipo está
     adelantado se ajusta la marca de tiempo usada al firmar.
     """
+    # Evita reajustar si ya se hizo en esta ejecución.
+    if getattr(_corregir_reloj, "_aplicado", False):
+        return
+
+    desfase = _desfase_cache()
+    if desfase is None:
+        try:
+            respuesta = urllib.request.urlopen("https://www.google.com", timeout=8)
+            real = email.utils.parsedate_to_datetime(respuesta.headers["Date"]).timestamp()
+            ahora = datetime.datetime.now(datetime.timezone.utc).timestamp()
+            desfase = ahora - real
+            if abs(desfase) > 86400:  # más de un día: medida no confiable
+                desfase = 0.0
+            _guardar_desfase(desfase)
+        except Exception:
+            desfase = 0.0
+
+    if abs(desfase) < 60:
+        _corregir_reloj._aplicado = True
+        return
+
+    import google.auth._helpers as helpers
+    helpers.utcnow = (
+        lambda: datetime.datetime.utcnow()
+        - datetime.timedelta(seconds=desfase)
+    )
+    _corregir_reloj._aplicado = True
+
+
+_ARCHIVO_DESFASE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".desfase_reloj")
+
+
+def _desfase_cache() -> Optional[float]:
+    """Lee el desfase medido previamente, si existe y es reciente."""
     try:
-        respuesta = urllib.request.urlopen("https://www.google.com", timeout=15)
-        real = email.utils.parsedate_to_datetime(respuesta.headers["Date"]).timestamp()
-        ahora = datetime.datetime.now(datetime.timezone.utc).timestamp()
-        desfase = ahora - real
-        if abs(desfase) < 60:
-            return
-        import google.auth._helpers as helpers
-        helpers.utcnow = (
-            lambda: datetime.datetime.utcnow()
-            - datetime.timedelta(seconds=desfase)
-        )
+        if not os.path.exists(_ARCHIVO_DESFASE):
+            return None
+        if time.time() - os.path.getmtime(_ARCHIVO_DESFASE) > 86400:
+            return None
+        with open(_ARCHIVO_DESFASE, encoding="utf-8") as archivo:
+            return float(archivo.read().strip())
+    except Exception:
+        return None
+
+
+def _guardar_desfase(valor: float) -> None:
+    try:
+        with open(_ARCHIVO_DESFASE, "w", encoding="utf-8", newline="\n") as archivo:
+            archivo.write(str(int(valor)))
     except Exception:
         pass
 

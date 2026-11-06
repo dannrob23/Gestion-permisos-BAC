@@ -170,13 +170,16 @@ def _sheets_config():
 
 
 def _cargar_sheets(hoja, credencial):
-    """Lee las solicitudes desde la hoja de Google."""
+    """Lee las solicitudes desde la hoja. Registra el motivo si falla."""
     try:
         filas = SH.leer_filas(hoja, credencial or None)
         if not filas:
+            st.session_state["_sheets_error"] = "La hoja respondió vacía."
             return pd.DataFrame()
+        st.session_state.pop("_sheets_error", None)
         return pd.DataFrame(filas)
-    except Exception:
+    except Exception as exc:
+        st.session_state["_sheets_error"] = str(exc)[:220]
         return pd.DataFrame()
 
 
@@ -210,6 +213,10 @@ def cargar_datos(simplificar=True):
                 df = pd.DataFrame()
     if df.empty:
         df = _cargar_sqlite()
+        if hoja:
+            st.session_state["_fuente_datos"] = "sqlite_respaldo"
+    elif hoja:
+        st.session_state["_fuente_datos"] = "sheets"
     if simplificar and not df.empty:
         df = _aplicar_filtro_aprobados(df)
     return df
@@ -269,6 +276,14 @@ df = cargar_datos()
 
 st.caption(f"Consulta abierta: {ahora_colombia()} · "
            f"Datos publicados: {_frescura_datos()} (hora de Colombia)")
+
+_hoja_cfg, _cred_cfg = _sheets_config()
+if _hoja_cfg and st.session_state.get("_fuente_datos") == "sqlite_respaldo":
+    st.error(
+        "⚠️ No se pudo leer la hoja de Google. Se están mostrando datos de "
+        "respaldo que pueden estar desactualizados.\n\n"
+        f"Motivo: {st.session_state.get('_sheets_error', 'sin detalle')}"
+    )
 
 # --- Toggle: Simplificar vista (debe estar antes de usarlo) ---
 col_t, _ = st.columns([2, 1])
