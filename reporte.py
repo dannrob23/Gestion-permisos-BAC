@@ -12,6 +12,7 @@ import streamlit as st
 import pandas as pd
 
 import supabase_datos as SB
+import sheets_datos as SH
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.join(BASE, "publico", "base.db")
@@ -150,6 +151,35 @@ def _supabase_config():
     return url.strip(), clave.strip(), servicio.strip()
 
 
+def _sheets_config():
+    """Devuelve (hoja_id, ruta_credencial) si Google Sheets está configurado."""
+    hoja = credencial = ""
+    try:
+        hoja = str(st.secrets.get("GOOGLE_SHEET_ID") or "")
+        credencial = str(st.secrets.get("GOOGLE_CREDENCIALES_JSON") or "")
+    except Exception:
+        pass
+    hoja = hoja or os.environ.get("GOOGLE_SHEET_ID", "")
+    if not hoja:
+        return "", ""
+    if credencial and os.path.exists(credencial):
+        return hoja.strip(), credencial
+    if SH.disponible():
+        return hoja.strip(), ""
+    return "", ""
+
+
+def _cargar_sheets(hoja, credencial):
+    """Lee las solicitudes desde la hoja de Google."""
+    try:
+        filas = SH.leer_filas(hoja, credencial or None)
+        if not filas:
+            return pd.DataFrame()
+        return pd.DataFrame(filas)
+    except Exception:
+        return pd.DataFrame()
+
+
 def _cargar_sqlite():
     ruta_db = _ruta_db()
     if not os.path.exists(ruta_db):
@@ -166,15 +196,18 @@ def _cargar_sqlite():
 
 @st.cache_data(ttl=30)
 def cargar_datos(simplificar=True):
-    """Lee de Supabase si está configurado; si no, de la copia SQLite."""
-    url, clave, _ = _supabase_config()
+    """Lee de Google Sheets o Supabase; si no hay, de la copia SQLite."""
     df = pd.DataFrame()
-    if url and clave:
-        try:
-            filas = SB.cargar_solicitudes(url, clave)
-            df = pd.DataFrame(filas)
-        except Exception:
-            df = pd.DataFrame()
+    hoja, credencial = _sheets_config()
+    if hoja:
+        df = _cargar_sheets(hoja, credencial)
+    if df.empty:
+        url, clave, _ = _supabase_config()
+        if url and clave:
+            try:
+                df = pd.DataFrame(SB.cargar_solicitudes(url, clave))
+            except Exception:
+                df = pd.DataFrame()
     if df.empty:
         df = _cargar_sqlite()
     if simplificar and not df.empty:
@@ -208,6 +241,14 @@ def _parsedt(txt):
 
 def _frescura_datos():
     """Fecha del último cambio en los datos, según la fuente activa."""
+    hoja, credencial = _sheets_config()
+    if hoja:
+        try:
+            titulo = SH.ultima_actualizacion(hoja, credencial or None)
+            if titulo:
+                return "hoja de Google (tiempo real)"
+        except Exception:
+            pass
     url, clave, _ = _supabase_config()
     if url and clave:
         try:
@@ -297,7 +338,20 @@ def _guardar_sqlite_y_publicar(solicitud_id, nuevo_estado):
 
 
 def _guardar_estado(solicitud_id, nuevo_estado, estado_anterior):
-    """Escribe en Supabase si está configurado; si no, en SQLite con push."""
+    """Escribe en Google Sheets o Supabase; si no hay, en SQLite con push."""
+    hoja, credencial = _sheets_config()
+    if hoja:
+        fecha = ""
+        if nuevo_estado in ("APROBADO", "RECHAZADO"):
+            fecha = datetime.now(ZONA_COLOMBIA).strftime("%d/%m/%Y %H:%M")
+        try:
+            SH.actualizar_estado(hoja, solicitud_id, nuevo_estado,
+                                 ruta_credencial=credencial or None,
+                                 fecha_respuesta=fecha)
+            st.toast("Estado actualizado en la hoja de Google")
+        except Exception as exc:
+            st.error(f"No se pudo actualizar en Google Sheets: {str(exc)[:200]}")
+        return
     url, _clave, servicio = _supabase_config()
     if url and servicio:
         try:
