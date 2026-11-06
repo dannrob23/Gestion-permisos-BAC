@@ -20,6 +20,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import asistente as A
 import sincronizar_publico as SINC
+import sheets_datos as SH
 
 st.set_page_config(page_title="Asistente Correos BAC", page_icon="📧", layout="wide")
 
@@ -135,7 +136,41 @@ def copiar_html_portapapeles(html_doc):
         pass
     return False, tmp
 
+def _sheets_cfg():
+    """Devuelve (hoja_id, ruta_credencial) si Google Sheets está configurado."""
+    hoja = credencial = ""
+    try:
+        hoja = str(st.secrets.get("GOOGLE_SHEET_ID") or "")
+        credencial = str(st.secrets.get("GOOGLE_CREDENCIALES_JSON") or "")
+    except Exception:
+        pass
+    hoja = hoja or os.environ.get("GOOGLE_SHEET_ID", "")
+    if not hoja:
+        return "", ""
+    if credencial and os.path.exists(credencial):
+        return hoja.strip(), credencial
+    if SH.disponible():
+        return hoja.strip(), ""
+    return "", ""
+
+
 def marcar_estado(reg_id, estado):
+    """Actualiza el estado en Google Sheets y en la base local."""
+    hoja, credencial = _sheets_cfg()
+    if hoja:
+        fecha = ""
+        if estado in ("APROBADO", "RECHAZADO"):
+            fecha = datetime.now(ZoneInfo("America/Bogota")).strftime("%d/%m/%Y %H:%M")
+        try:
+            SH.actualizar_estado(hoja, int(reg_id), estado,
+                                 ruta_credencial=credencial or None,
+                                 fecha_respuesta=fecha)
+        except Exception as exc:
+            st.warning(f"⚠️ No se pudo escribir en Google Sheets: {str(exc)[:150]}")
+    _marcar_estado_local(reg_id, estado)
+
+
+def _marcar_estado_local(reg_id, estado):
     con = A.init_db()
     if estado in ("APROBADO", "RECHAZADO"):
         ahora = datetime.now(ZoneInfo("America/Bogota")).strftime("%d/%m/%Y %H:%M")
@@ -161,19 +196,42 @@ def _parse_fecha_resp(estado, fecha_resp):
 def leer_historial(filtrar_aprobados=True):
     """Lee el historial. Si filtrar_aprobados=True, oculta APROBADO con más de 2 días
     de antigüedad (accesible siempre vía histórico descendente o descarga)."""
+    hoja, credencial = _sheets_cfg()
+    if hoja:
+        try:
+            filas = SH.leer_filas(hoja, credencial or None)
+            if filas:
+                df = pd.DataFrame(filas)
+                df["id"] = pd.to_numeric(df["id"], errors="coerce").fillna(0).astype(int)
+                for col in ("caso", "oficina", "solicitante", "fecha_solicitud",
+                            "regional", "aprobador", "estado", "fecha_proceso",
+                            "fecha_respuesta"):
+                    if col not in df.columns:
+                        df[col] = ""
+                    df[col] = df[col].fillna("").astype(str)
+                df = df.sort_values("id", ascending=False).reset_index(drop=True)
+                return _filtrar_aprobados(df, filtrar_aprobados)
+        except Exception:
+            pass
     con = A.init_db()
     df = pd.read_sql_query("SELECT * FROM historial ORDER BY id DESC", con)
     con.close()
-    if filtrar_aprobados and not df.empty:
-        if "fecha_respuesta" in df.columns:
-            df["_es_visible"] = True
-            mask = (df["estado"] == "APROBADO") & df["fecha_respuesta"].notna() & (df["fecha_respuesta"] != "")
-            if mask.any():
-                visibles = ~(mask & (df["fecha_respuesta"].map(
-                    lambda x: _dias_aprobado(x) > 2)))
-                df = df[visibles].copy()
-        df = df.drop(columns=["_es_visible"], errors="ignore")
-    return df
+    return _filtrar_aprobados(df, filtrar_aprobados)
+
+
+def _filtrar_aprobados(df, filtrar_aprobados=True):
+    """Oculta APROBADO con más de 2 días de antigüedad."""
+    if not filtrar_aprobados or df.empty:
+        return df
+    if "fecha_respuesta" not in df.columns:
+        return df
+    df["_es_visible"] = True
+    mask = (df["estado"] == "APROBADO") & df["fecha_respuesta"].notna() & (df["fecha_respuesta"] != "")
+    if mask.any():
+        visibles = ~(mask & (df["fecha_respuesta"].map(
+            lambda x: _dias_aprobado(x) > 2)))
+        df = df[visibles].copy()
+    return df.drop(columns=["_es_visible"], errors="ignore")
 
 def _dias_aprobado(fecha_resp_str):
     """Días desde la fecha de respuesta. >2 días significa histórico."""
@@ -885,7 +943,7 @@ with tab_hist:
     # --- Toggle: Simplificar vista ---
     col_toggle, _ = st.columns([2, 1])
     with col_toggle:
-        simplificado = st.toggle("🔍 Simplificar vista (oculta aprobados >2 días)", value=True,
+        simplificado = st.toggle("🔍 Simplificar vista (oculta aprobados >2 días)", value=False,
                                  help="Muestra solo solicitudes del día y aprobados recientes. "
                                       "Los aprobados con más de 2 días se ocultan pero siguen "
                                       "disponibles en el histórico descendente o en la descarga.")
@@ -939,7 +997,7 @@ with tab_hist:
         st.markdown("#### 📄 Tabla de solicitudes")
         st.markdown("**Semáforo de estados:** " + semaforo_leyenda(), unsafe_allow_html=True)
 
-        modo_tabla = st.radio("Ver la tabla como:", ["🎨 Vista con colores", "✏️ Editar estados"],
+        modo_tabla = st.radio("Ver la tabla como:", ["✏️ Editar estados", "🎨 Vista con colores"],
                               horizontal=True, key="modo_tabla")
 
         base = df[["id", "caso", "oficina", "solicitante", "fecha_solicitud",
@@ -975,7 +1033,7 @@ with tab_hist:
         else:
             vis = display.loc[idx_vis].reset_index(drop=True)
 
-            if modo_tabla == "🎨 Vista con colores":
+            if modo_tabla.startswith("🎨"):
                 # Semáforo: cada fila se colorea según el estado
                 styled = vis.style.map(fondo_estado, subset=["Estado"])
                 st.dataframe(styled, use_container_width=True, height=420)
