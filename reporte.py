@@ -203,7 +203,7 @@ df["Estado"] = df["estado"].apply(estado_norm)
 if es_admin:
     st.markdown("---")
     st.markdown("#### Editar estado")
-    opciones_estados = ["PENDIENTE APROBACION", "APROBADO", "RECHAZADO", "ENVIADO", "RECIBIDO"]
+    opciones_estados = ["PENDIENTE APROBACIÓN", "APROBADO", "RECHAZADO", "ENVIADO", "RECIBIDO"]
     for idx, row in df.iterrows():
         c1, c2, c3 = st.columns([3, 2, 1])
         with c1:
