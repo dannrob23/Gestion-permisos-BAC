@@ -11,6 +11,7 @@ escribe en el remoto ni en archivos del repositorio.
 """
 from __future__ import annotations
 
+import base64
 import os
 import sqlite3
 import subprocess
@@ -113,9 +114,13 @@ def _git(args: list[str], token: Optional[str] = None) -> subprocess.CompletedPr
     if token:
         # Git consume la cabecera desde variables temporales del proceso.
         # No se modifica origin y el secreto no queda en .git/config.
+        # GitHub exige autenticación "basic" para Git sobre HTTPS.
+        credencial = base64.b64encode(
+            ("x-access-token:" + token).encode("utf-8")
+        ).decode("ascii")
         entorno["GIT_CONFIG_COUNT"] = "1"
         entorno["GIT_CONFIG_KEY_0"] = "http.extraHeader"
-        entorno["GIT_CONFIG_VALUE_0"] = "AUTHORIZATION: bearer " + token
+        entorno["GIT_CONFIG_VALUE_0"] = "AUTHORIZATION: basic " + credencial
     return subprocess.run(
         ["git", "-C", BASE, *args],
         capture_output=True,
@@ -144,8 +149,9 @@ def sincronizar(token: Optional[str] = None, commit_message: str = "Sincronizar 
                 "mensaje": "La copia pública ya estaba actualizada."}
 
     if not token:
-        return {"cambio": True, "publicado": False, "filas": filas,
-                "mensaje": "Copia local actualizada; falta GITHUB_TOKEN para publicarla."}
+        # Git puede usar las credenciales guardadas del sistema (Credential Manager).
+        # Se intenta publicar igualmente en lugar de abortar.
+        pass
 
     agregado = _git(["add", "--", RUTA_PUBLICA_RELATIVA], token)
     if agregado.returncode != 0:
@@ -167,8 +173,11 @@ def sincronizar(token: Optional[str] = None, commit_message: str = "Sincronizar 
     if push.returncode == 0:
         return {"cambio": True, "publicado": True, "filas": filas,
                 "mensaje": "Historial público actualizado en GitHub."}
+    detalle = push.stderr.strip()[:300]
+    if not token:
+        detalle += " | Configura GITHUB_TOKEN ejecutando configurar_token.py"
     return {"cambio": True, "publicado": False, "filas": filas,
-            "mensaje": f"La copia quedó en un commit local, pero falló el push: {push.stderr.strip()[:300]}"}
+            "mensaje": f"La copia quedó en un commit local, pero falló el push: {detalle}"}
 
 
 if __name__ == "__main__":

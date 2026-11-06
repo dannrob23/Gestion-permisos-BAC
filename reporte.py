@@ -237,9 +237,11 @@ if es_admin:
                 except Exception:
                     token = ""
                 if token:
+                    import base64 as _b64
+                    _cred = _b64.b64encode(("x-access-token:" + token).encode("utf-8")).decode("ascii")
                     env["GIT_CONFIG_COUNT"] = "1"
                     env["GIT_CONFIG_KEY_0"] = "http.extraHeader"
-                    env["GIT_CONFIG_VALUE_0"] = "AUTHORIZATION: bearer " + token
+                    env["GIT_CONFIG_VALUE_0"] = "AUTHORIZATION: basic " + _cred
                 subprocess.run(["git", "-C", dirp, "add", "publico/base.db"],
                                capture_output=True, text=True, env=env)
                 commit = subprocess.run(["git", "-C", dirp, "commit", "-m", "Cambio de estado público"],
