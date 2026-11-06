@@ -12,6 +12,8 @@ publico/base.db.tmp
 .streamlit/secrets.toml
 secrets.toml
 .env
+.supabase_pat
+.supabase_db_pass
 
 # Python
 __pycache__/
