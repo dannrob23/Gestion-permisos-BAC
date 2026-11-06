@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 import pandas as pd
 
+import supabase_datos as SB
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.join(BASE, "publico", "base.db")
 ZONA_COLOMBIA = ZoneInfo("America/Bogota")
@@ -133,17 +135,48 @@ def _ruta_db():
     return DB
 
 
-@st.cache_data(ttl=30)
-def cargar_datos(simplificar=True):
+def _supabase_config():
+    """Lee la configuración de Supabase desde Streamlit o el entorno."""
+    url = clave = servicio = ""
+    try:
+        url = str(st.secrets.get("SUPABASE_URL") or "")
+        clave = str(st.secrets.get("SUPABASE_KEY") or "")
+        servicio = str(st.secrets.get("SUPABASE_SERVICE_KEY") or "")
+    except Exception:
+        pass
+    url = url or os.environ.get("SUPABASE_URL", "")
+    clave = clave or os.environ.get("SUPABASE_KEY", "")
+    servicio = servicio or os.environ.get("SUPABASE_SERVICE_KEY", "")
+    return url.strip(), clave.strip(), servicio.strip()
+
+
+def _cargar_sqlite():
     ruta_db = _ruta_db()
     if not os.path.exists(ruta_db):
         return pd.DataFrame()
     con = sqlite3.connect(ruta_db)
-    df = pd.read_sql_query(
-        """SELECT id, caso, oficina, solicitante, fecha_solicitud, regional,
-                  aprobador, estado, fecha_proceso, fecha_respuesta
-           FROM historial ORDER BY id DESC""", con)
-    con.close()
+    try:
+        return pd.read_sql_query(
+            """SELECT id, caso, oficina, solicitante, fecha_solicitud, regional,
+                      aprobador, estado, fecha_proceso, fecha_respuesta
+               FROM historial ORDER BY id DESC""", con)
+    finally:
+        con.close()
+
+
+@st.cache_data(ttl=30)
+def cargar_datos(simplificar=True):
+    """Lee de Supabase si está configurado; si no, de la copia SQLite."""
+    url, clave, _ = _supabase_config()
+    df = pd.DataFrame()
+    if url and clave:
+        try:
+            filas = SB.cargar_solicitudes(url, clave)
+            df = pd.DataFrame(filas)
+        except Exception:
+            df = pd.DataFrame()
+    if df.empty:
+        df = _cargar_sqlite()
     if simplificar and not df.empty:
         df = _aplicar_filtro_aprobados(df)
     return df
@@ -174,7 +207,17 @@ def _parsedt(txt):
         return None
 
 def _frescura_datos():
-    """Fecha de la última publicación de la copia pública de datos."""
+    """Fecha del último cambio en los datos, según la fuente activa."""
+    url, clave, _ = _supabase_config()
+    if url and clave:
+        try:
+            marca = SB.ultima_actualizacion(url, clave)
+            if marca:
+                return datetime.fromisoformat(
+                    marca.replace("Z", "+00:00")).astimezone(ZONA_COLOMBIA
+                ).strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            pass
     try:
         marca = datetime.fromtimestamp(os.path.getmtime(DB), ZONA_COLOMBIA)
         return marca.strftime("%d/%m/%Y %H:%M")
@@ -209,6 +252,65 @@ if df.empty:
 df["Estado"] = df["estado"].apply(estado_norm)
 
 # ---------- Edicion de estado (solo admin) ----------
+def _usuario_actual():
+    """Identifica a quien hace el cambio, si la app tiene login activo."""
+    try:
+        correo = str(getattr(st.user_info, "email", "") or "")
+        if correo:
+            return correo
+    except Exception:
+        pass
+    return "admin (clave compartida)"
+
+
+def _guardar_sqlite_y_publicar(solicitud_id, nuevo_estado):
+    """Modo anterior: actualiza la copia SQLite y publica en GitHub."""
+    con = sqlite3.connect(DB)
+    con.execute("UPDATE historial SET estado=? WHERE id=?", (nuevo_estado, solicitud_id))
+    con.commit()
+    con.close()
+
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    try:
+        token = str(st.secrets.get("GITHUB_TOKEN") or "")
+    except Exception:
+        token = ""
+    if token:
+        import base64 as _b64
+        cred = _b64.b64encode(("x-access-token:" + token).encode("utf-8")).decode("ascii")
+        env["GIT_CONFIG_COUNT"] = "1"
+        env["GIT_CONFIG_KEY_0"] = "http.extraHeader"
+        env["GIT_CONFIG_VALUE_0"] = "AUTHORIZATION: basic " + cred
+
+    import subprocess
+    dirp = os.path.dirname(os.path.abspath(__file__))
+    subprocess.run(["git", "-C", dirp, "add", "publico/base.db"],
+                   capture_output=True, text=True, env=env)
+    commit = subprocess.run(["git", "-C", dirp, "commit", "-m", "Cambio de estado público"],
+                            capture_output=True, text=True, env=env)
+    push = subprocess.run(["git", "-C", dirp, "push", "origin", "main"],
+                          capture_output=True, text=True, env=env)
+    if commit.returncode == 0 and push.returncode == 0:
+        st.toast("Estado actualizado y publicado")
+    else:
+        st.warning("Estado actualizado en esta sesión, pero no se pudo publicar en GitHub.")
+
+
+def _guardar_estado(solicitud_id, nuevo_estado, estado_anterior):
+    """Escribe en Supabase si está configurado; si no, en SQLite con push."""
+    url, _clave, servicio = _supabase_config()
+    if url and servicio:
+        try:
+            SB.actualizar_estado(url, servicio, solicitud_id, nuevo_estado,
+                                 usuario=_usuario_actual(),
+                                 estado_anterior=estado_anterior)
+            st.toast("Estado actualizado en la base central")
+        except Exception as exc:
+            st.error(f"No se pudo actualizar en Supabase: {str(exc)[:200]}")
+        return
+    _guardar_sqlite_y_publicar(solicitud_id, nuevo_estado)
+
+
 if es_admin:
     st.markdown("---")
     st.markdown("#### Editar estado")
@@ -223,35 +325,8 @@ if es_admin:
                                  key=f"est_{row['id']}")
         with c3:
             if st.button("Guardar", key=f"save_{row['id']}"):
-                import sqlite3 as _sq
-                con = _sq.connect(DB)
-                con.execute("UPDATE historial SET estado=? WHERE id=?", (nuevo, int(row["id"])))
-                con.commit()
-                con.close()
+                _guardar_estado(int(row["id"]), nuevo, str(row["Estado"]))
                 cargar_datos.clear()
-                import subprocess
-                dirp = os.path.dirname(os.path.abspath(__file__))
-                env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-                try:
-                    token = str(st.secrets.get("GITHUB_TOKEN") or "")
-                except Exception:
-                    token = ""
-                if token:
-                    import base64 as _b64
-                    _cred = _b64.b64encode(("x-access-token:" + token).encode("utf-8")).decode("ascii")
-                    env["GIT_CONFIG_COUNT"] = "1"
-                    env["GIT_CONFIG_KEY_0"] = "http.extraHeader"
-                    env["GIT_CONFIG_VALUE_0"] = "AUTHORIZATION: basic " + _cred
-                subprocess.run(["git", "-C", dirp, "add", "publico/base.db"],
-                               capture_output=True, text=True, env=env)
-                commit = subprocess.run(["git", "-C", dirp, "commit", "-m", "Cambio de estado público"],
-                                        capture_output=True, text=True, env=env)
-                push = subprocess.run(["git", "-C", dirp, "push", "origin", "main"],
-                                      capture_output=True, text=True, env=env)
-                if commit.returncode == 0 and push.returncode == 0:
-                    st.toast("Estado actualizado y publicado")
-                else:
-                    st.warning("Estado actualizado en esta sesión, pero no se pudo publicar en GitHub.")
                 st.rerun()
 
 df = df.drop(columns=["estado", "id"])
