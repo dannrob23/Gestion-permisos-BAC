@@ -695,6 +695,16 @@ with tab_aprob:
         reg_sel = st.selectbox("Selecciona la Regional:", regiones_nombres)
         info_reg = next((n for n in novedades if n["regional"] == reg_sel), None)
 
+        if info_reg is None:
+            st.warning(
+                "No hay regionales configuradas en esta instalación.\n\n"
+                "Esta aplicación de **gestión** requiere la base de datos local "
+                "(`base.db`) y debe ejecutarse en el equipo de trabajo, no en la nube.\n\n"
+                "Para consultar desde el celular usa: "
+                "https://consultatupermiso.streamlit.app/"
+            )
+            st.stop()
+
         tipo_cambio = st.radio("Tipo de cambio:", [
             "🏖️ Reemplazo Temporal (Vacaciones / Licencia / Incapacidad)",
             "👔 Cambio de Titular Definitivo (Retiro / Nuevo Ingreso)"
